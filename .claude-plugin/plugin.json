@@ -1,0 +1,7 @@
+{
+  "name": "limits-log",
+  "version": "0.1.0",
+  "description": "Журнал лимитов подписки (5h/7d) в JSON Lines и отчёт /limits",
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}
