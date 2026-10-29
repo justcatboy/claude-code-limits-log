@@ -78,4 +78,6 @@ API — `.claude-plugin/types/`
   `panel.tsx` (`Line` не рисует пустое). В снимке анализа (`types/index.d.ts`) — данные, не тексты;
   при смене его формы — новый `shape` атома `analysis`.
 - Личное окружение и данные автора — в `CLAUDE.local.md` (не в git).
-- Коммиты — Conventional Commits. Позже — `.claude-plugin/marketplace.json` для установки с GitHub.
+- Коммиты — Conventional Commits. Репозиторий — сам себе маркетплейс
+  (`.claude-plugin/marketplace.json`): установка — `/plugin install limits-log --marketplace
+  justcatboy/claude-code-limits-log`; пользователи получают то, что в `main`.

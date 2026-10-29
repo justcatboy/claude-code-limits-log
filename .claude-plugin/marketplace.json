@@ -1,0 +1,5 @@
+{
+  "name": "claude-code-limits-log",
+  "owner": { "name": "justcatboy" },
+  "plugins": [{ "name": "limits-log", "source": "./" }]
+}

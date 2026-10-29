@@ -5,15 +5,21 @@
 
 ## Установка
 
-Мод ещё не опубликован, его загружают из папки:
+В строке ввода Claude Code в терминале:
 
-```sh
-claude --plugin-dir <папка мода>
+```
+/plugin install limits-log --marketplace justcatboy/claude-code-limits-log
 ```
 
-Так мод загружается только в одну сессию. Лимит общий на аккаунт, и мод видит его только там, где
-загружен, поэтому лучше подключить его ко всем сессиям — в блоке `env` пользовательских настроек
-(`~/.claude/settings.json` или `settings.json` в `CLAUDE_CONFIG_DIR`):
+На вопрос `Add marketplace?` ответьте `y`, затем выберите область — `user`, чтобы мод работал во
+всех сессиях: лимит общий на аккаунт, а мод видит его только там, где загружен.
+
+Из оболочки — `claude plugin install limits-log --marketplace justcatboy/claude-code-limits-log`.
+В десктопном приложении: `+` у поля ввода → Plugins → Add marketplace
+`justcatboy/claude-code-limits-log` → Add plugin.
+
+Из папки, без установки (для разработки): `claude --plugin-dir <папка мода>` — только в эту сессию;
+во все сессии — `CLAUDE_CODE_PLUGIN_DIRS` в блоке `env` пользовательских настроек:
 
 ```json
 { "env": { "CLAUDE_CODE_PLUGIN_DIRS": "<полный путь к папке мода>" } }
