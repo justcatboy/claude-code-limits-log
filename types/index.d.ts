@@ -36,7 +36,20 @@ export type WeekReport = {
   turns?: number
   turnsDelta?: number
   rows: number
+  // Работа сессий по записям с usageTotals или стоимостью (без первой записи журнала): по дням
+  // недели — сессии, по первой записи дня; за неделю — проекты (рабочие папки), больше трата —
+  // выше. Нет таких записей — нет.
+  work?: { days: { index: number; start: number; sessions: SessionWork[] }[]; projects: ProjectWork[] }
 }
+
+// Работа: сообщения (ходы основного цикла), токены вывода и все токены (с кэшем), трата по ценам
+// API (нет — неизвестна).
+export type Work = { turns: number; output: number; tokens: number; spent?: number }
+// Сессия за день недели: id, рабочая папка (неизвестна — нет) и первая запись дня, unix-секунды.
+export type SessionWork = Work & { session: string; project?: string; first: number }
+// Проект за неделю: сколько сессий и доля недели в процентах 7d — трата, делённая на цену 1%
+// недели (нет траты или цены — нет).
+export type ProjectWork = Work & { project?: string; sessions: number; share?: number }
 
 // Бюджет дня недели в процентах окна 7d: ширина его отрезка на полосе и сколько потрачено.
 export type DayBudget = { budget: number; used: number }
@@ -44,8 +57,8 @@ export type DayBudget = { budget: number; used: number }
 // Режим now: что осталось и хватит ли до сброса. Проценты — окна 7d, время — unix-секунды.
 export type NowReport = {
   // Неделя по дням: начало, сегодняшний день (0 … 6) и бюджеты дней — поровну и по прошлым
-  // неделям (по среднему приросту последних законченных, не больше 5; pastWeeks — сколько их;
-  // нет законченных — нет).
+  // неделям (по среднему приросту последних законченных полных, не больше 5; pastWeeks — сколько
+  // их; меньше двух — нет).
   week?: { start: number; today: number; even: DayBudget[]; usual?: DayBudget[]; pastWeeks: number }
   // Когда кончится окно 5h при темпе этого окна, если раньше его сброса.
   h5ExhaustAt?: number

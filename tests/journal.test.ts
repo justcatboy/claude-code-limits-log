@@ -123,6 +123,25 @@ describe('токены между записями (usageTotals)', () => {
     expect(rows.map(r => inputOf(r.usage))).toEqual([30, 5])
   })
 
+  test('по сессиям: ходы, токены и трата каждой; трата повтора — в оставленную строку', async () => {
+    const rows = toRows([
+      { ...limits('09:00:00', 'A', 10, 1, [total('A', 1, [opus(10)])]), costUsd: 1 },
+      {
+        ...limits('09:10:00', 'B', 11, 1, [total('A', 3, [opus(40, 3)]), total('B', 1, [opus(7)])]),
+        costUsd: 2,
+      },
+      // Повтор от A: его трата — в строку B.
+      { ...limits('09:10:02', 'A', 11, 1, [total('A', 3, [opus(40, 3)])]), costUsd: 4 },
+    ])
+    const of = (i: number) =>
+      rows[i]!.sessions!.map(s => [s.session, s.turns, inputOf(s.usage), s.spent]).sort()
+    expect(of(0)).toEqual([['A', 1, 10, 1]])
+    expect(of(1)).toEqual([
+      ['A', 2, 30, 3],
+      ['B', 1, 7, 2],
+    ])
+  })
+
   test('старые записи (v1–v3) без usageTotals — turns как записан', async () => {
     const old: LimitsRecord = { ...limits('09:00:00', 'A', 10, 1), v: 2, turns: 4 }
     expect(toRows([old])[0]!.turns).toBe(4)

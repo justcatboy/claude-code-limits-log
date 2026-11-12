@@ -3,7 +3,7 @@ import type { SessionRateLimit } from 'claude-code'
 import { describe, expect, test } from 'claude-code/testing'
 
 import { analyze } from '../hooks/analysis'
-import type { Row } from '../hooks/files'
+import type { Row, SessionDelta } from '../hooks/files'
 
 const DAY = 86_400
 const WEEK = 7 * DAY
@@ -28,6 +28,13 @@ const after = (days: number) => START + days * DAY
 const nowMs = (days: number) => after(days) * 1000
 // Запись недели до START: журнал начался раньше, недели с START — полные.
 const earlier = () => row(START - 3 * DAY, 5, { d7Reset: START })
+// Записи недели START…RESET и они же неделей раньше, журнал начался ещё раньше: две полные
+// прошлые недели с одинаковыми днями.
+const twice = (rows: Row[]) => [
+  row(START - 10 * DAY, 5, { d7Reset: START - WEEK }),
+  ...rows.map(r => row(Date.parse(r.ts) / 1000 - WEEK, r.d7, { d7Reset: r.d7Reset - WEEK })),
+  ...rows,
+]
 
 describe('неделя', () => {
   test('прирост от нуля, по дням; сброс вне расписания прироста не даёт', async () => {
@@ -108,6 +115,44 @@ describe('неделя', () => {
     expect(w!.costD7).toBe(6)
     expect(w!.turns).toBe(6)
     expect(w!.turnsDelta).toBe(6)
+  })
+
+  test('работа недели: сессии по дням и проекты с долей недели по трате', async () => {
+    const work = (session: string, turns: number, output: number, spent?: number): SessionDelta => ({
+      session,
+      turns,
+      usage: [{ model: 'opus', turns, input: 1, output, cacheRead: 100, cacheWrite: 0 }],
+      spent,
+    })
+    const rows = [
+      earlier(),
+      row(after(0.5), 2, { spent: 3, sessions: [work('A', 2, 100, 1), work('B', 1, 50, 2)] }),
+      row(after(0.6), 4, { spent: 1, sessions: [work('A', 1, 10, 1)] }),
+      row(after(1.5), 6, { spent: 4, sessions: [work('C', 3, 30, 4)] }),
+    ]
+    const projects = { A: 'C:\\p\\alpha', B: '/home/x/beta', C: 'C:\\p\\alpha' }
+    const [w] = analyze(rows, [], nowMs(8), projects).weeks
+    expect(
+      w!.work!.days.map(d => [
+        d.index,
+        d.sessions.map(s => [s.session, s.project, s.turns, s.output, s.tokens, s.spent]),
+      ]),
+    ).toEqual([
+      [
+        0,
+        [
+          ['A', 'C:\\p\\alpha', 3, 110, 312, 2],
+          ['B', '/home/x/beta', 1, 50, 151, 2],
+        ],
+      ],
+      [1, [['C', 'C:\\p\\alpha', 3, 30, 131, 4]]],
+    ])
+    expect(w!.work!.days[0]!.sessions[0]!.first).toBe(after(0.5))
+    // $8 за 6% → $4/3 за 1%: alpha $6 ≈ 4.5%, beta $2 ≈ 1.5%.
+    expect(w!.work!.projects.map(p => [p.project, p.sessions, p.turns, p.output, p.spent, p.share])).toEqual([
+      ['C:\\p\\alpha', 2, 6, 140, 6, 4.5],
+      ['/home/x/beta', 1, 1, 50, 2, 1.5],
+    ])
   })
 
   test('журнал начался с нуля процентов — неделя полная', async () => {
@@ -232,15 +277,14 @@ describe('сейчас', () => {
     ])
     expect(alone.usual).toBeUndefined()
 
-    // Прошлая неделя по дням: 10, 30, 0, 0, 20, 20, 20.
-    const past = [
-      earlier(),
+    // Прошлые недели по дням: 10, 30, 0, 0, 20, 20, 20.
+    const past = twice([
       row(after(0.5), 10),
       row(after(1.5), 40),
       row(after(4.5), 60),
       row(after(5.5), 80),
       row(after(6.5), 100),
-    ]
+    ])
     const usual = analyze([...past, ...now], seven, nowMs(8.5)).now.week!.usual!
     // Сегодня 80 × 30/90 ≈ 26,7%, потрачено 20; остаток 53,3% — по 20:20:20, выходным ничего.
     expect(round(usual)).toEqual([
@@ -271,9 +315,9 @@ describe('сейчас', () => {
   })
 
   test('прогноз по законченным неделям: средний прирост дня недели в оставшиеся дни', async () => {
-    // Прошлая неделя: +10% каждый день.
-    const past = [0, 1, 2, 3, 4, 5, 6].map(i => row(after(i + 0.5), 10 * (i + 1)))
-    const rows = [earlier(), ...past, current(10.4, 30)]
+    // Прошлые недели: +10% каждый день.
+    const past = twice([0, 1, 2, 3, 4, 5, 6].map(i => row(after(i + 0.5), 10 * (i + 1))))
+    const rows = [...past, current(10.4, 30)]
 
     const calm = analyze(rows, [limit('seven_day', 30, NEXT)], nowMs(NOW)).now
     expect(calm.basis).toBe('weeks')
@@ -284,6 +328,14 @@ describe('сейчас', () => {
     const tight = analyze(rows, [limit('seven_day', 70, NEXT)], nowMs(NOW)).now
     expect(tight.forecast).toBe(105)
     expect(Math.abs(tight.exhaustAt! - after(NOW + 3))).toBeLessThan(3600)
+  })
+
+  test('одна полная прошлая неделя — ещё не средние: поровну и по темпу этой', async () => {
+    const past = [0, 1, 2, 3, 4, 5, 6].map(i => row(after(i + 0.5), 10 * (i + 1)))
+    const n = analyze([earlier(), ...past, current(10.4, 30)], [limit('seven_day', 30, NEXT)], nowMs(NOW)).now
+    expect(n.week!.usual).toBeUndefined()
+    expect(n.week!.pastWeeks).toBe(1)
+    expect(n.basis).toBe('pace')
   })
 
   test('неполная неделя не идёт в прошлые недели и цену 1%', async () => {

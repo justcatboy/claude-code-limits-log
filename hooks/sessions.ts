@@ -172,3 +172,14 @@ export async function allTotals($: Dollar): Promise<UsageTotal[]> {
   }
   return out
 }
+
+// Рабочие папки сессий, чьи итоги ещё в $.store (идущих — в журнале их ещё нет): только чтение.
+export async function storedProjects($: Dollar): Promise<Record<string, string>> {
+  const out: Record<string, string> = {}
+  for (const k of await $.store.keys()) {
+    if (!k.startsWith(PREFIX)) continue
+    const t = (await $.store.get(k)) as SessionTotals | undefined
+    if (t?.project) out[t.session] = t.project
+  }
+  return out
+}

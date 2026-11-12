@@ -43,3 +43,17 @@ export function plural(n: number, [one, few, many]: [string, string, string]): s
 
 export const signed = (n: number) => `${n >= 0 ? '+' : ''}${n}`
 export const usd = (n: number) => `$${n.toFixed(2)}`
+
+// Большое число коротко: «950», «12k», «3.4M».
+export function short(n: number): string {
+  if (n < 1000) return String(Math.round(n))
+  if (n < 1_000_000) return `${Math.round(n / 1000)}k`
+  return `${(n / 1_000_000).toFixed(1)}M`
+}
+
+// Последняя часть пути: «C:\p\alpha» → «alpha».
+export const baseName = (path: string) =>
+  path
+    .split(/[\\/]+/)
+    .filter(Boolean)
+    .at(-1) ?? path

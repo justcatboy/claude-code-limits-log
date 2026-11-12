@@ -5,14 +5,26 @@
 // недели сравниваются день в день.
 import type { SessionRateLimit } from 'claude-code'
 
-import type { Analysis, DayBudget, NowReport, WeekReport, WindowNow, WindowsReport } from '../types'
-import type { Row } from './files'
+import type {
+  Analysis,
+  DayBudget,
+  NowReport,
+  ProjectWork,
+  SessionWork,
+  WeekReport,
+  WindowNow,
+  WindowsReport,
+  Work,
+} from '../types'
+import type { Row, SessionDelta } from './files'
 import { DAY, H5, WEEK, fromUnix } from './format'
 
 // Доля недели, раньше которой прогноз по темпу недели не считается: ~3 часа, слишком шумно.
 const MIN_FORECAST_SHARE = 0.02
 // Сколько последних законченных недель берут полоса «по прошлым неделям» и прогноз.
 const PAST_WEEKS = 5
+// Меньше стольких полных прошлых недель — их средние не берутся: одна неделя слишком случайна.
+const MIN_PAST_WEEKS = 2
 // Окно 5h: раньше этого процента и этого времени от начала окна темп окна не считается.
 const MIN_H5_PCT = 5
 const MIN_H5_ELAPSED = 15 * 60
@@ -44,10 +56,81 @@ function d7Deltas(rows: Row[]): Map<Row, number> {
   return deltas
 }
 
+function addWork(to: Work, s: SessionDelta) {
+  to.turns += s.turns
+  for (const u of s.usage) {
+    to.output += u.output
+    to.tokens += u.input + u.output + u.cacheRead + u.cacheWrite
+  }
+  if (s.spent !== undefined) to.spent = (to.spent ?? 0) + s.spent
+}
+
+const noWork = (): Work => ({ turns: 0, output: 0, tokens: 0 })
+
+// Работа сессий недели: по дням и по проектам. perPp — $ за 1% недели: доля проекта — его трата
+// по этой цене.
+function weekWork(
+  rows: Row[],
+  start: number,
+  projects: Record<string, string>,
+  perPp: number | undefined,
+): WeekReport['work'] {
+  const days = new Map<number, Map<string, SessionWork>>()
+  for (const r of rows) {
+    for (const s of r.sessions ?? []) {
+      const index = dayOf(Date.parse(r.ts) / 1000, start + WEEK)
+      const day = days.get(index) ?? new Map<string, SessionWork>()
+      days.set(index, day)
+      let w = day.get(s.session)
+      if (!w) {
+        w = { session: s.session, project: projects[s.session], first: Date.parse(r.ts) / 1000, ...noWork() }
+        day.set(s.session, w)
+      }
+      addWork(w, s)
+    }
+  }
+  if (days.size === 0) return undefined
+
+  const byProject = new Map<string, ProjectWork & { ids: Set<string> }>()
+  for (const day of days.values()) {
+    for (const s of day.values()) {
+      const key = s.project ?? ''
+      let p = byProject.get(key)
+      if (!p) byProject.set(key, (p = { project: s.project, sessions: 0, ids: new Set(), ...noWork() }))
+      p.ids.add(s.session)
+      p.turns += s.turns
+      p.output += s.output
+      p.tokens += s.tokens
+      if (s.spent !== undefined) p.spent = (p.spent ?? 0) + s.spent
+    }
+  }
+  const projectList = [...byProject.values()].map(({ ids, ...p }) => ({
+    ...p,
+    sessions: ids.size,
+    ...(perPp && p.spent !== undefined ? { share: p.spent / perPp } : {}),
+  }))
+  return {
+    days: [...days]
+      .sort(([a], [b]) => a - b)
+      .map(([index, day]) => ({
+        index,
+        start: start + index * DAY,
+        sessions: [...day.values()].sort((a, b) => a.first - b.first || (a.session < b.session ? -1 : 1)),
+      })),
+    projects: projectList.sort((a, b) => (b.spent ?? 0) - (a.spent ?? 0) || b.output - a.output),
+  }
+}
+
 // first — первая запись журнала. Её процент набран до журнала, неизвестно когда и за сколько:
-// в днях он есть (неделя по дням сходится с d7), а в стоимость и ходы на 1% не идёт; неделя с ней
-// (если процент не нулевой) — неполная.
-function week(reset: number, rows: Row[], nowSec: number, first: Row | undefined): WeekReport {
+// в днях он есть (неделя по дням сходится с d7), а в стоимость, ходы на 1% и работу сессий не
+// идёт; неделя с ней (если процент не нулевой) — неполная. projects — рабочие папки сессий.
+function week(
+  reset: number,
+  rows: Row[],
+  nowSec: number,
+  first: Row | undefined,
+  projects: Record<string, string>,
+): WeekReport {
   const deltas = d7Deltas(rows)
   const known = (r: Row) => r !== first
 
@@ -83,6 +166,9 @@ function week(reset: number, rows: Row[], nowSec: number, first: Row | undefined
     rows: rows.length,
   }
   if (first && rows.includes(first) && first.d7 > 0) report.missed = first.d7
+  const perPp = report.cost !== undefined && report.costD7 ? report.cost / report.costD7 : undefined
+  const work = weekWork(rows.filter(known), start, projects, perPp)
+  if (work) report.work = work
 
   if (report.isCurrent) {
     const share = Math.min(1, Math.max(0, (nowSec - start) / WEEK))
@@ -207,7 +293,7 @@ function nowReport(windows: WindowNow[], weeks: WeekReport[], rows: Row[], nowSe
   // Недели — от последней к первой: последние PAST_WEEKS законченных полных (у неполной нет дней
   // до начала журнала — средние по дням занизились бы).
   const past = weeks.filter(w => !w.isCurrent && w.missed === undefined).slice(0, PAST_WEEKS)
-  const averages = past.length ? dayAverages(past) : undefined
+  const averages = past.length >= MIN_PAST_WEEKS ? dayAverages(past) : undefined
   report.week = {
     start: reset - WEEK,
     today,
@@ -322,7 +408,13 @@ function windowsReport(rows: Row[], now: NowReport, nowSec: number): WindowsRepo
   return report
 }
 
-export function analyze(logRows: Row[], limits: SessionRateLimit[], now: number): Analysis {
+// projects — рабочие папки сессий по id: из записей session и итогов идущих сессий.
+export function analyze(
+  logRows: Row[],
+  limits: SessionRateLimit[],
+  now: number,
+  projects: Record<string, string> = {},
+): Analysis {
   const nowSec = Math.floor(now / 1000)
   const rows = logRows.filter(r => r.d7Reset > 0)
   const resets = [...new Set(rows.map(r => r.d7Reset))].sort((a, b) => b - a)
@@ -332,6 +424,7 @@ export function analyze(logRows: Row[], limits: SessionRateLimit[], now: number)
       rows.filter(r => r.d7Reset === reset),
       nowSec,
       rows[0],
+      projects,
     ),
   )
   const windows: WindowNow[] = limits

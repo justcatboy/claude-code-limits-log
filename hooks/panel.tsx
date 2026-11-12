@@ -1,6 +1,6 @@
 // Панель /limits: раскладка. Снимок анализа считается при открытии (refresh), тексты строк —
-// в view.ts. Три режима, у каждого свои компоненты: now (текущая неделя — что осталось и хватит
-// ли до сброса, затем окно 5h), week (вкладки законченных недель — окон 7d, последняя первой),
+// в view.ts. Три режима, у каждого свои компоненты: now (хватит ли до сброса: окна 7d и 5h, полоса
+// дней, цена и остаток), week (вкладки законченных недель — окон 7d, последняя первой),
 // windows (окна 5h по всему журналу). Режим — аргумент команды или клавиши n / w / o; r
 // пересчитывает снимок.
 import { atom, read, update } from 'claude-code'
@@ -8,7 +8,8 @@ import type { EngineInterface as Dollar, Register, TextProps } from 'claude-code
 
 import type { Analysis, DayBudget, View, WeekReport } from '../types'
 import { analyze } from './analysis'
-import { LOG_DIR, configDir, readLog } from './files'
+import { LOG_DIR, configDir, projectsOf, readRecords, toRows } from './files'
+import { storedProjects } from './sessions'
 import { ddmm, hhmm, pad } from './format'
 import * as text from './view'
 
@@ -18,7 +19,7 @@ const MAX_TABS = 9
 // Уже панели полосы не сжимаются: дни перестают различаться.
 const MIN_WIDTH = 21
 
-const analysis = atom({ plugin: 'limits-log', key: 'analysis' } as const, null, { shape: 'analysis-9' })
+const analysis = atom({ plugin: 'limits-log', key: 'analysis' } as const, null, { shape: 'analysis-10' })
 // Индекс выбранной недели среди законченных (вкладки режима week).
 const week = atom({ plugin: 'limits-log', key: 'week' } as const, 0, { shape: 'week-1' })
 const view = atom({ plugin: 'limits-log', key: 'view' } as const, 'now' as View, { shape: 'view-2' })
@@ -33,9 +34,11 @@ const VIEWS: Record<string, View> = {
 }
 
 async function refresh($: Dollar) {
-  const rows = await readLog($, `${await configDir($)}/${LOG_DIR}`)
+  const records = await readRecords($, `${await configDir($)}/${LOG_DIR}`)
+  // Папки сессий: законченных — из записей session, идущих — из их итогов.
+  const projects = { ...projectsOf(records), ...(await storedProjects($)) }
   const usage = await $.session.usage()
-  await update($, analysis, () => analyze(rows, usage.rateLimits, Date.now()))
+  await update($, analysis, () => analyze(toRows(records), usage.rateLimits, Date.now(), projects))
   await update($, week, () => 0)
 }
 
@@ -186,32 +189,48 @@ function WeekTabs({ ui, weeks, index, act }: { ui: Ui; weeks: WeekReport[]; inde
 }
 
 // =============================================================================
-// Режим now: сначала неделя, потом окно 5h
+// Режим now: хватит ли до сброса
 // =============================================================================
 
-// Неделя: период и заполнение (из ответа API, иначе из журнала), полосы дней — поровну и по
-// прошлым неделям, хватит ли до сброса, затем стоимость, модели и прирост по дням.
-function NowWeek({ ui, a, width }: { ui: Ui; a: Analysis; width: number }) {
+// Сверху — ответ: заполнение 7d и 5h, хватит ли, окно 5h, сегодня и сколько можно. Дальше полоса
+// дней (по прошлым неделям, пока их меньше двух — поровну), затем цена, остаток и потраченное.
+// width — клеток в теле панели: полоски растягиваются на всю ширину.
+function NowView({ ui, a, width }: { ui: Ui; a: Analysis; width: number }) {
   const { Box } = ui
   const n = a.now
   const current = a.weeks[0]?.isCurrent ? a.weeks[0] : undefined
   const d7 = a.windows.find(w => w.kind === 'seven_day')
+  const h5 = a.windows.find(w => w.kind === 'five_hour')
   const reset = d7?.resetsAt ?? current?.reset
   const pct = d7?.pct ?? current?.d7
   if (reset === undefined || pct === undefined) {
     return <Line ui={ui} dim text="Лимитов ещё нет: придут с первым ответом API." />
   }
+  const meter = Math.max(10, width - 8)
   return (
     <Box flexDirection="column">
-      <Line ui={ui} bold text={text.nowWeekTitle(reset, pct)} />
+      <Line ui={ui} bold text={text.nowWeekTitle(reset, n.secondsLeft)} />
+      <MeterLine ui={ui} label="7d" pct={pct} width={meter} />
+      {h5 && <MeterLine ui={ui} label="5h" pct={h5.pct} width={meter} />}
+
+      <Box flexDirection="column" marginTop={1}>
+        <Line ui={ui} color={text.outlookLevel(n)} text={text.outlookLine(n)} />
+        {h5 && (
+          <Line
+            ui={ui}
+            color={n.h5ExhaustAt !== undefined ? 'yellow' : undefined}
+            text={text.h5Line(h5, n)}
+          />
+        )}
+        <Line ui={ui} text={text.todayLine(n)} />
+        <Line ui={ui} text={text.allowanceLine(n)} />
+      </Box>
+
       {n.week && (
-        <DayBars ui={ui} title="Поровну" days={n.week.even} start={n.week.start} pct={pct} width={width} />
-      )}
-      {n.week?.usual && (
         <DayBars
           ui={ui}
-          title={text.pastWeeksTitle(n.week.pastWeeks)}
-          days={n.week.usual}
+          title={text.dayBarTitle(n.week.usual && n.week.pastWeeks)}
+          days={n.week.usual ?? n.week.even}
           start={n.week.start}
           pct={pct}
           width={width}
@@ -219,53 +238,40 @@ function NowWeek({ ui, a, width }: { ui: Ui; a: Analysis; width: number }) {
       )}
 
       <Box flexDirection="column" marginTop={1}>
-        <Line ui={ui} text={text.resetLine(n)} />
-        <Line ui={ui} text={text.todayLine(n)} />
-        <Line ui={ui} text={text.allowanceLine(n)} />
-        <Line ui={ui} color={text.outlookLevel(n)} text={text.outlookLine(n)} />
-      </Box>
-
-      <Box flexDirection="column" marginTop={1}>
-        <Line ui={ui} text={text.priceLine(n)} />
+        <Line ui={ui} text={text.priceLine(n, a.h5)} />
         <Line ui={ui} text={text.leftLine(n)} />
         {current && <Line ui={ui} text={text.spentLine(current)} />}
         {current && <Line ui={ui} dim text={text.nowModelsLine(current)} />}
       </Box>
 
-      {current && (
-        <Box flexDirection="column">
-          <Heading ui={ui} text="По дням" />
-          {current.days.map(d => (
-            <Line ui={ui} key={String(d.index)} text={text.dayLine(d)} />
-          ))}
-        </Box>
-      )}
+      {current?.work && <WeekWork ui={ui} work={current.work} />}
     </Box>
   )
 }
 
-// Окно 5h: с и по, заполнение, сколько осталось и когда кончится.
-function NowH5({ ui, a, width }: { ui: Ui; a: Analysis; width: number }) {
+// Работа недели: проекты за неделю, затем сессии по дням (итог дня и его сессии).
+function WeekWork({ ui, work }: { ui: Ui; work: NonNullable<WeekReport['work']> }) {
   const { Box } = ui
-  const h5 = a.windows.find(w => w.kind === 'five_hour')
-  if (!h5) return null
-  return (
-    <Box flexDirection="column" marginTop={1}>
-      <Line ui={ui} bold text={text.h5Title(h5)} />
-      <MeterLine ui={ui} label="5h" pct={h5.pct} width={Math.max(10, width - 8)} />
-      <Line ui={ui} text={text.h5LeftLine(h5)} />
-      <Line ui={ui} color="yellow" text={text.h5ExhaustLine(a.now)} />
-    </Box>
-  )
-}
-
-// width — клеток в теле панели: полосы растягиваются на всю ширину.
-function NowView({ ui, a, width }: { ui: Ui; a: Analysis; width: number }) {
-  const { Box } = ui
+  const width = text.nameWidth([
+    ...work.projects.map(p => text.projectName(p.project)),
+    ...work.days.flatMap(d => d.sessions.map(s => text.projectName(s.project))),
+  ])
   return (
     <Box flexDirection="column">
-      <NowWeek ui={ui} a={a} width={width} />
-      <NowH5 ui={ui} a={a} width={width} />
+      <Heading ui={ui} text="Проекты недели" />
+      {work.projects.map(p => (
+        <Line ui={ui} key={p.project ?? '?'} text={text.projectLine(p, width)} />
+      ))}
+
+      <Heading ui={ui} text="Сессии по дням" />
+      {work.days.map((d, i) => (
+        <Box key={String(d.index)} flexDirection="column" marginTop={i === 0 ? 0 : 1}>
+          <Line ui={ui} dim text={text.workDayTitle(d)} />
+          {d.sessions.map(s => (
+            <Line ui={ui} key={s.session} text={text.sessionLine(s, width)} />
+          ))}
+        </Box>
+      ))}
     </Box>
   )
 }

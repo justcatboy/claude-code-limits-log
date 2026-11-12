@@ -115,8 +115,12 @@ export function appendRecord($: Dollar, session: string, record: LogRecord): Pro
 // Чтение
 // =============================================================================
 
+// Что одна сессия наработала с прошлой строки: ходы и токены — разница её usageTotals, spent —
+// приросты её costUsd (повторы тоже).
+export type SessionDelta = { session: string; turns: number; usage: TokenUsage[]; spent?: number }
+
 // Запись limits в плоском виде для анализа: окна 5h и 7d вынуты из windows; turns, usage и
-// spent — с прошлой (уже без повторов) записи.
+// spent — с прошлой (уже без повторов) записи, sessions — то же по сессиям.
 export type Row = {
   ts: string
   h5: number
@@ -131,6 +135,7 @@ export type Row = {
   // Потрачено по ценам API: приросты costUsd всех сессий с прошлой записи, повторы тоже; нет —
   // ни одного известного прироста.
   spent?: number
+  sessions?: SessionDelta[]
 }
 
 const dataLines = (text: string) => text.split(/\r?\n/).filter(line => line.trim())
@@ -206,28 +211,37 @@ export function toRows(records: LogRecord[]): Row[] {
     const spent = spentBy(r)
     if (kept && (windowsState(r) === windowsState(kept) || isStale(kept, r))) {
       const row = rows.at(-1)!
-      if (spent !== undefined) row.spent = (row.spent ?? 0) + spent
+      if (spent !== undefined) {
+        row.spent = (row.spent ?? 0) + spent
+        addSpent(row, r.session ?? '', spent)
+      }
       continue
     }
     kept = r
 
     let turns = r.turns
     let usage: TokenUsage[] | undefined
+    let sessions: SessionDelta[] | undefined
     if (r.usageTotals) {
       turns = 0
-      const diffs: TokenUsage[][] = []
+      sessions = []
       for (const t of r.usageTotals) {
         const was = totals.get(t.session)
-        turns += Math.max(0, t.turns - (was?.turns ?? 0))
-        diffs.push(subtract(t.usage, was?.usage ?? []))
+        const delta = {
+          session: t.session,
+          turns: Math.max(0, t.turns - (was?.turns ?? 0)),
+          usage: subtract(t.usage, was?.usage ?? []),
+        }
+        turns += delta.turns
+        if (delta.turns > 0 || delta.usage.length > 0) sessions.push(delta)
         totals.set(t.session, t)
       }
-      usage = sum(diffs)
+      usage = sum(sessions.map(s => s.usage))
     }
 
     const h5 = r.windows.find(w => w.kind === 'five_hour')
     const d7 = r.windows.find(w => w.kind === 'seven_day')
-    rows.push({
+    const row: Row = {
       ts: r.ts,
       h5: h5?.pct ?? 0,
       h5Reset: h5?.resetsAt ?? 0,
@@ -239,9 +253,27 @@ export function toRows(records: LogRecord[]): Row[] {
       turns,
       usage,
       spent,
-    })
+      sessions,
+    }
+    if (spent !== undefined) addSpent(row, row.session, spent)
+    rows.push(row)
   }
   return rows
+}
+
+// Трата сессии — в её долю строки.
+function addSpent(row: Row, session: string, spent: number) {
+  row.sessions ??= []
+  let s = row.sessions.find(x => x.session === session)
+  if (!s) row.sessions.push((s = { session, turns: 0, usage: [] }))
+  s.spent = (s.spent ?? 0) + spent
+}
+
+// Рабочие папки сессий из записей session (последняя запись сессии — верная).
+export function projectsOf(records: LogRecord[]): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const r of records) if (r.kind === 'session' && r.project) out[r.session] = r.project
+  return out
 }
 
 // Все записи журнала: все файлы всех месяцев. Нет папки — пусто.
@@ -262,12 +294,6 @@ export async function readRecords($: Dollar, logDir: string): Promise<LogRecord[
     }
   }
   return records
-}
-
-// Строки анализа по всему журналу. Объявлена через function: validate следует за $ через импорт
-// только в объявления функций.
-export async function readLog($: Dollar, logDir: string): Promise<Row[]> {
-  return toRows(await readRecords($, logDir))
 }
 
 // Каталог профиля: CLAUDE_CONFIG_DIR, иначе ~/.claude.

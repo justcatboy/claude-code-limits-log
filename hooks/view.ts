@@ -1,10 +1,21 @@
 // Тексты панели /limits: что показать. Каждая функция — одна строка или её часть из данных
 // снимка; undefined — строки нет. Раскладка — в panel.tsx.
-import type { DayBudget, NowReport, WeekReport, WindowNow, WindowsReport } from '../types'
+import type {
+  DayBudget,
+  NowReport,
+  ProjectWork,
+  SessionWork,
+  WeekReport,
+  WindowNow,
+  WindowsReport,
+  Work,
+} from '../types'
 import {
   DAY,
   H5,
   WEEK,
+  baseName,
+  short,
   dayLabel,
   ddmm,
   fromUnix,
@@ -143,20 +154,16 @@ const SESSIONS: [string, string, string] = ['сессия', 'сессии', 'с�
 const round1 = (n: number) => Math.round(n * 10) / 10
 const at = (seconds: number) => `${dayLabel(fromUnix(seconds))} ${hhmm(fromUnix(seconds))}`
 
-// Подпись полосы по прошлым неделям: «По прошлой неделе», «По 3 прошлым неделям».
-export const pastWeeksTitle = (weeks: number) =>
-  weeks === 1 ? 'По прошлой неделе' : `По ${weeks} прошлым неделям`
+// Подпись полосы дней: «Поровну», «По 3 прошлым неделям» (их не меньше двух).
+export const dayBarTitle = (pastWeeks?: number) => (pastWeeks ? `По ${pastWeeks} прошлым неделям` : 'Поровну')
 
-// «Неделя 04.03 10:00 – 11.03 10:00 · 14%».
-export function nowWeekTitle(reset: number, pct: number): string {
+// «Неделя 04.03 10:00 – 11.03 10:00 · сброс через 6д 05ч».
+export function nowWeekTitle(reset: number, secondsLeft?: number): string {
   const start = fromUnix(reset - WEEK)
   const end = fromUnix(reset)
-  return `Неделя ${ddmm(start)} ${hhmm(start)} – ${ddmm(end)} ${hhmm(end)} · ${round1(pct)}%`
+  const left = secondsLeft !== undefined ? ` · сброс через ${span(secondsLeft)}` : ''
+  return `Неделя ${ddmm(start)} ${hhmm(start)} – ${ddmm(end)} ${hhmm(end)}${left}`
 }
-
-// «Сброс     через 6д 05ч».
-export const resetLine = (n: NowReport) =>
-  n.secondsLeft !== undefined ? status('Сброс', `через ${span(n.secondsLeft)}`) : undefined
 
 // «Сегодня   +11% · $34.00 · 120 сообщений».
 export function todayLine(n: NowReport): string {
@@ -191,12 +198,13 @@ export function outlookLine(n: NowReport): string | undefined {
   return status('Запас', `${word} · ${detail}`)
 }
 
-// «Цена 1%   $3.14 · 11 сообщений».
-export function priceLine(n: NowReport): string | undefined {
+// «1% недели ~6.1% 5h окна · $3.14 · 11 сообщений»; доля окна — по d7PerPct режима windows.
+export function priceLine(n: NowReport, x?: WindowsReport): string | undefined {
   const parts: string[] = []
+  if (x?.d7PerPct) parts.push(`~${round1(1 / x.d7PerPct)}% 5h окна`)
   if (n.costPerPp !== undefined) parts.push(usd(n.costPerPp))
   if (n.turnsPerPp !== undefined) parts.push(plural(Math.round(n.turnsPerPp), MESSAGES))
-  return parts.length ? status('Цена 1%', parts.join(' · ')) : undefined
+  return parts.length ? status('1% недели', parts.join(' · ')) : undefined
 }
 
 // «Остаток   69% ≈ $217 · 759 сообщений».
@@ -221,18 +229,57 @@ export function nowModelsLine(w: WeekReport): string | undefined {
   return status('Модели', w.models.map(m => `${m.model} ${signed(m.delta)}%`).join(', '))
 }
 
-// «Окно 5h 14:20–19:20».
-export function h5Title(w: WindowNow): string {
-  if (w.resetsAt === undefined) return 'Окно 5h'
-  return `Окно 5h ${hhmm(fromUnix(w.resetsAt - H5))}–${hhmm(fromUnix(w.resetsAt))}`
+// «Окно 5h   14:20–19:20 · остаток ~52%», если кончится раньше сброса — « · кончится к 17:40».
+export function h5Line(w: WindowNow, n: NowReport): string {
+  const parts: string[] = []
+  if (w.resetsAt !== undefined) parts.push(`${hhmm(fromUnix(w.resetsAt - H5))}–${hhmm(fromUnix(w.resetsAt))}`)
+  parts.push(`остаток ~${Math.max(0, round1(100 - w.pct))}%`)
+  if (n.h5ExhaustAt !== undefined) parts.push(`кончится к ${hhmm(fromUnix(n.h5ExhaustAt))}`)
+  return status('Окно 5h', parts.join(' · '))
 }
 
-// «Остаток   ~52%».
-export const h5LeftLine = (w: WindowNow) => status('Остаток', `~${Math.max(0, round1(100 - w.pct))}%`)
+// =============================================================================
+// Работа сессий: проекты и сессии по дням
+// =============================================================================
 
-// «Кончится  к 13:40» — только если раньше сброса окна.
-export const h5ExhaustLine = (n: NowReport) =>
-  n.h5ExhaustAt !== undefined ? status('Кончится', `к ${hhmm(fromUnix(n.h5ExhaustAt))}`) : undefined
+// Имя проекта — последняя часть рабочей папки; неизвестна — «?».
+export const projectName = (project?: string) => (project ? baseName(project) : '?')
+
+// Ширина колонки имён: по самому длинному, не больше 24.
+export const nameWidth = (names: string[]) => Math.min(24, Math.max(0, ...names.map(n => n.length)))
+
+const fit = (name: string, width: number) =>
+  name.length > width ? `${name.slice(0, width - 1)}…` : name.padEnd(width)
+
+// «$6.00 · 6 сообщений · вывод 140k · всего 12M».
+function workText(w: Work): string {
+  const parts: string[] = []
+  if (w.spent !== undefined) parts.push(usd(w.spent))
+  parts.push(plural(w.turns, MESSAGES), `вывод ${short(w.output)}`, `всего ${short(w.tokens)}`)
+  return parts.join(' · ')
+}
+
+// «main-manager  ~36% · $58.00 · 41 сообщение · вывод 120k · всего 40M · 5 сессий».
+export function projectLine(p: ProjectWork, width: number): string {
+  const share = p.share !== undefined ? `~${round1(p.share)}% · ` : ''
+  return `${fit(projectName(p.project), width)}  ${share}${workText(p)} · ${plural(p.sessions, SESSIONS)}`
+}
+
+// «ср 11.11 · $70.00 · 30 сообщений · вывод 200k · всего 60M» — итог дня по его сессиям.
+export function workDayTitle(d: { start: number; sessions: SessionWork[] }): string {
+  const total: Work = { turns: 0, output: 0, tokens: 0 }
+  for (const s of d.sessions) {
+    total.turns += s.turns
+    total.output += s.output
+    total.tokens += s.tokens
+    if (s.spent !== undefined) total.spent = (total.spent ?? 0) + s.spent
+  }
+  return `${dayLabel(fromUnix(d.start))} · ${workText(total)}`
+}
+
+// «  09:12 main-manager  $40.00 · 12 сообщений · вывод 80k · всего 20M» — время первой записи дня.
+export const sessionLine = (s: SessionWork, width: number) =>
+  `  ${hhmm(fromUnix(s.first))} ${fit(projectName(s.project), width)}  ${workText(s)}`
 
 // =============================================================================
 // Окна 5h по журналу
