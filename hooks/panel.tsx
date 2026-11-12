@@ -1,7 +1,8 @@
 // Панель /limits: раскладка. Снимок анализа считается при открытии (refresh), тексты строк —
-// в view.ts. Два режима, у каждого свои компоненты: now (текущая неделя — что осталось и хватит
-// ли до сброса, затем окно 5h), week (вкладки законченных недель — окон 7d, последняя первой).
-// Режим — аргумент команды или клавиши n / w; r пересчитывает снимок.
+// в view.ts. Три режима, у каждого свои компоненты: now (текущая неделя — что осталось и хватит
+// ли до сброса, затем окно 5h), week (вкладки законченных недель — окон 7d, последняя первой),
+// windows (окна 5h по всему журналу). Режим — аргумент команды или клавиши n / w / o; r
+// пересчитывает снимок.
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface as Dollar, Register, TextProps } from 'claude-code'
 
@@ -17,12 +18,19 @@ const MAX_TABS = 9
 // Уже панели полосы не сжимаются: дни перестают различаться.
 const MIN_WIDTH = 21
 
-const analysis = atom({ plugin: 'limits-log', key: 'analysis' } as const, null, { shape: 'analysis-7' })
+const analysis = atom({ plugin: 'limits-log', key: 'analysis' } as const, null, { shape: 'analysis-8' })
 // Индекс выбранной недели среди законченных (вкладки режима week).
 const week = atom({ plugin: 'limits-log', key: 'week' } as const, 0, { shape: 'week-1' })
 const view = atom({ plugin: 'limits-log', key: 'view' } as const, 'now' as View, { shape: 'view-2' })
 
-const VIEWS: Record<string, View> = { '': 'now', now: 'now', week: 'week', weeks: 'week' }
+const VIEWS: Record<string, View> = {
+  '': 'now',
+  now: 'now',
+  week: 'week',
+  weeks: 'week',
+  windows: 'windows',
+  h5: 'windows',
+}
 
 async function refresh($: Dollar) {
   const rows = await readLog($, `${await configDir($)}/${LOG_DIR}`)
@@ -117,6 +125,7 @@ function Header({ ui, at, mode, act }: { ui: Ui; at: Date; mode: View; act: Acti
       <Text bold>{`Анализ на ${hhmm(at)} ${ddmm(at)}`}</Text>
       {modeButton('now', 'n', 'сейчас')}
       {modeButton('week', 'w', 'недели')}
+      {modeButton('windows', 'o', 'окна')}
       <Button hotkey="r" onPress={act.refresh}>
         r обновить
       </Button>
@@ -280,6 +289,45 @@ function WeekView({ ui, a, index, act }: { ui: Ui; a: Analysis; index: number; a
 }
 
 // =============================================================================
+// Режим windows
+// =============================================================================
+
+// Окна 5h по всему журналу: сколько и до какого процента доходили, что окно стоит в 7d, сколько
+// окон вмещает остаток недели, в какие часы окна начинаются чаще.
+function WindowsView({ ui, a }: { ui: Ui; a: Analysis }) {
+  const { Box } = ui
+  const x = a.h5
+  if (x.total === 0) return <Line ui={ui} dim text="Законченных окон 5h в журнале ещё нет." />
+  const most = x.byStart[0]?.count ?? 0
+  return (
+    <Box flexDirection="column">
+      <Line ui={ui} bold text={text.windowsTitle(x)} />
+      <Box flexDirection="column" marginTop={1}>
+        {x.levels.map(l => (
+          <Line ui={ui} key={String(l.from)} text={text.levelLine(l, x.total)} />
+        ))}
+      </Box>
+
+      <Box flexDirection="column" marginTop={1}>
+        <Line ui={ui} text={text.usualWindowLine(x)} />
+        <Line ui={ui} text={text.fullWindowLine(x)} />
+        <Line ui={ui} text={text.fillLine(x)} />
+      </Box>
+
+      <Box flexDirection="column" marginTop={1}>
+        <Line ui={ui} text={text.windowsWeekLine(x)} />
+        <Line ui={ui} text={text.fitLine(x)} />
+      </Box>
+
+      <Heading ui={ui} text="По часу начала" />
+      {x.byStart.map(s => (
+        <Line ui={ui} key={String(s.hour)} text={text.startLine(s, most)} />
+      ))}
+    </Box>
+  )
+}
+
+// =============================================================================
 // Команда и панель
 // =============================================================================
 
@@ -288,14 +336,14 @@ export async function startPanel($: Dollar) {
   await $.command.register({
     name: 'limits',
     description: 'Лимиты подписки: что осталось до сброса, по неделям',
-    argumentHint: '[now|week]',
+    argumentHint: '[now|week|windows]',
   })
 }
 
 export function registerPanel(on: Parameters<Register>[0]) {
   on('command.run', { command: 'limits' }, async ($, e) => {
     const mode = VIEWS[e.args.trim().toLowerCase()]
-    if (!mode) return { text: `Не знаю режим «${e.args.trim()}»: now или week.` }
+    if (!mode) return { text: `Не знаю режим «${e.args.trim()}»: now, week или windows.` }
     await refresh($)
     await update($, view, () => mode)
     await $.ui.open({ id: PANE, title: 'Limits' })
@@ -334,6 +382,7 @@ export function registerPanel(on: Parameters<Register>[0]) {
             <NowView ui={ui} a={snapshot} width={Math.max(MIN_WIDTH, e.props.bodyColumns)} />
           )}
           {mode === 'week' && <WeekView ui={ui} a={snapshot} index={index} act={act} />}
+          {mode === 'windows' && <WindowsView ui={ui} a={snapshot} />}
         </Box>
       </Box>
     )

@@ -1,13 +1,13 @@
-// Анализ журнала для /limits: недели (окна 7d), текущие окна и что осталось до сброса.
+// Анализ журнала для /limits: недели (окна 7d), текущие окна и что осталось до сброса, окна 5h.
 // Чистые функции: всё на входе, снимок с данными на выходе; тексты — в view.ts.
 //
 // День недели — 24 часа от начала окна 7d (сброс минус 7 дней), 0 … 6: у недели ровно 7 дней, и
 // недели сравниваются день в день.
 import type { SessionRateLimit } from 'claude-code'
 
-import type { Analysis, DayBudget, NowReport, WeekReport, WindowNow } from '../types'
+import type { Analysis, DayBudget, NowReport, WeekReport, WindowNow, WindowsReport } from '../types'
 import type { Row } from './files'
-import { DAY, H5, WEEK } from './format'
+import { DAY, H5, WEEK, fromUnix } from './format'
 
 // Доля недели, раньше которой прогноз по темпу недели не считается: ~3 часа, слишком шумно.
 const MIN_FORECAST_SHARE = 0.02
@@ -220,6 +220,102 @@ function nowReport(windows: WindowNow[], weeks: WeekReport[], rows: Row[], nowSe
   return report
 }
 
+// =============================================================================
+// Режим windows: окна 5h
+// =============================================================================
+
+// Окно 5h из журнала: наибольший процент, прирост 7d за окно, когда дошло до 100%. partial — в
+// окне первая запись журнала: её прирост 7d неизвестен.
+type H5Window = {
+  start: number
+  reset: number
+  d7Reset: number
+  max: number
+  d7: number
+  fullAt?: number
+  partial: boolean
+}
+
+// Окна ниже этого процента в прирост 7d на 1% окна не идут: округление до целого слишком шумно.
+const MIN_MEASURED_PCT = 10
+// Уровни наибольшего процента окна, сверху вниз.
+const LEVELS = [100, 80, 50, 0]
+
+function h5Windows(rows: Row[]): H5Window[] {
+  const deltas = new Map<Row, number>()
+  for (const reset of new Set(rows.map(r => r.d7Reset))) {
+    for (const [r, d] of d7Deltas(rows.filter(r => r.d7Reset === reset))) deltas.set(r, d)
+  }
+  const windows = new Map<number, H5Window>()
+  rows.forEach((r, i) => {
+    if (r.h5Reset <= 0) return
+    let w = windows.get(r.h5Reset)
+    if (!w) {
+      w = { start: r.h5Reset - H5, reset: r.h5Reset, d7Reset: r.d7Reset, max: 0, d7: 0, partial: false }
+      windows.set(r.h5Reset, w)
+    }
+    w.max = Math.max(w.max, r.h5)
+    if (i === 0) w.partial = true
+    else w.d7 += deltas.get(r)!
+    if (r.h5 >= 100 && w.fullAt === undefined) w.fullAt = Date.parse(r.ts) / 1000
+  })
+  return [...windows.values()].sort((a, b) => a.reset - b.reset)
+}
+
+const average = (values: number[]) => (values.length ? sum(values) / values.length : undefined)
+
+function windowsReport(rows: Row[], now: NowReport, nowSec: number): WindowsReport {
+  const all = h5Windows(rows)
+  const done = all.filter(w => w.reset <= nowSec)
+  const full = done.filter(w => w.fullAt !== undefined)
+
+  const measured = done.filter(w => !w.partial && w.max >= MIN_MEASURED_PCT)
+  const measuredMax = sum(measured.map(w => w.max))
+  const d7PerPct = measuredMax > 0 ? sum(measured.map(w => w.d7)) / measuredMax : undefined
+
+  const byHour = new Map<number, H5Window[]>()
+  for (const w of done) {
+    const hour = fromUnix(w.start).getHours()
+    byHour.set(hour, [...(byHour.get(hour) ?? []), w])
+  }
+
+  const report: WindowsReport = {
+    total: done.length,
+    weeks: new Set(done.map(w => w.d7Reset)).size,
+    levels: LEVELS.map((from, i) => ({
+      from,
+      to: LEVELS[i - 1] ?? 101,
+      count: done.filter(w => w.max >= from && w.max < (LEVELS[i - 1] ?? 101)).length,
+    })),
+    avgMax: average(done.map(w => w.max)),
+    d7PerPct,
+    fillSeconds: average(full.map(w => w.fullAt! - w.start)),
+    waitSeconds: average(full.map(w => w.reset - w.fullAt!)),
+    byStart: [...byHour]
+      .map(([hour, ws]) => ({
+        hour,
+        count: ws.length,
+        avgMax: average(ws.map(w => w.max))!,
+        full: ws.filter(w => w.fullAt !== undefined).length,
+      }))
+      .sort((a, b) => b.count - a.count || a.hour - b.hour),
+  }
+
+  if (now.week && now.left !== undefined && now.secondsLeft !== undefined) {
+    const reset = now.week.start + WEEK
+    const week = all.filter(w => w.d7Reset === reset)
+    report.week = { total: week.length, full: week.filter(w => w.fullAt !== undefined).length }
+    if (d7PerPct) {
+      report.fit = {
+        full: now.left / (100 * d7PerPct),
+        high: now.left / (80 * d7PerPct),
+        byTime: Math.floor(now.secondsLeft / H5),
+      }
+    }
+  }
+  return report
+}
+
 export function analyze(logRows: Row[], limits: SessionRateLimit[], now: number): Analysis {
   const nowSec = Math.floor(now / 1000)
   const rows = logRows.filter(r => r.d7Reset > 0)
@@ -235,10 +331,12 @@ export function analyze(logRows: Row[], limits: SessionRateLimit[], now: number)
     .filter(l => l.kind === 'five_hour' || l.kind === 'seven_day')
     .map(l => ({ kind: l.kind, pct: l.percentUsed, resetsAt: toUnix(l.resetsAt) }))
 
+  const nowPart = nowReport(windows, weeks, rows, nowSec)
   return {
     at: new Date(now).toISOString(),
     windows,
     weeks,
-    now: nowReport(windows, weeks, rows, nowSec),
+    now: nowPart,
+    h5: windowsReport(rows, nowPart, nowSec),
   }
 }

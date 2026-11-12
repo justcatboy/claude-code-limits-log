@@ -88,6 +88,65 @@ describe('неделя', () => {
   })
 })
 
+describe('окна 5h', () => {
+  const H = 3600
+  const H5 = 5 * H
+  // 26.02 09:00 по местному времени — внутри недели START…RESET в любом поясе.
+  const T0 = new Date(2026, 1, 26, 9).getTime() / 1000
+  const at = (t: number, h5: number, d7: number, start: number) => row(t, d7, { h5, h5Reset: start + H5 })
+  const rows = [
+    // Окно первой записи журнала: её прирост 7d неизвестен.
+    at(T0 - 5 * H, 30, 20, T0 - 6 * H),
+    // 09:00: до 100% за 2 часа, +10% 7d.
+    at(T0 + H, 40, 24, T0),
+    at(T0 + 2 * H, 100, 30, T0),
+    // Назавтра 09:00: до 50%, +5% 7d.
+    at(T0 + DAY + H, 20, 32, T0 + DAY),
+    at(T0 + DAY + 3 * H, 50, 35, T0 + DAY),
+    // 15:00: до 85%, +8% 7d.
+    at(T0 + DAY + 7 * H, 85, 43, T0 + DAY + 6 * H),
+    // Открытое окно — только в счёт недели.
+    at(T0 + 2 * DAY - 0.5 * H, 10, 44, T0 + 2 * DAY - H),
+  ]
+  const seven = [
+    {
+      kind: 'seven_day',
+      percentUsed: 44,
+      resetsAt: new Date(RESET * 1000).toISOString(),
+    } as SessionRateLimit,
+  ]
+  const nowSec = T0 + 2 * DAY
+
+  test('уровни, обычный процент, цена окна в 7d, время до 100%', async () => {
+    const x = analyze(rows, seven, nowSec * 1000).h5
+    expect(x.total).toBe(4)
+    expect(x.weeks).toBe(1)
+    expect(x.levels.map(l => [l.from, l.count])).toEqual([
+      [100, 1],
+      [80, 1],
+      [50, 1],
+      [0, 1],
+    ])
+    expect(x.avgMax).toBe((30 + 100 + 50 + 85) / 4)
+    // Без окна первой записи: (10 + 5 + 8) / (100 + 50 + 85).
+    expect(x.d7PerPct).toBe(23 / 235)
+    expect(x.fillSeconds).toBe(2 * H)
+    expect(x.waitSeconds).toBe(3 * H)
+  })
+
+  test('по часу начала — частые первыми; неделя и сколько окон вмещает остаток', async () => {
+    const x = analyze(rows, seven, nowSec * 1000).h5
+    expect(x.byStart[0]).toEqual({ hour: 9, count: 2, avgMax: 75, full: 1 })
+    expect(x.byStart.map(s => s.hour)).toEqual([9, 3, 15])
+    expect(x.week).toEqual({ total: 5, full: 1 })
+    // Остаток 56%, полное окно ≈ 9,8% 7d.
+    const round = (n: number) => Math.round(n * 1000) / 1000
+    expect(round(x.fit!.full)).toBe(round((56 * 235) / 2300))
+    expect(round(x.fit!.high)).toBe(round((56 * 235) / 1840))
+    expect(x.fit!.byTime).toBe(Math.floor((RESET - nowSec) / H5))
+  })
+})
+
 describe('сейчас', () => {
   // Текущая неделя — следующая за RESET; анализ в её середине.
   const NEXT = RESET + WEEK

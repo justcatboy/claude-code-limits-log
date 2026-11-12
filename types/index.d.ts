@@ -61,7 +61,31 @@ export type NowReport = {
   turnsPerPp?: number
 }
 
-export type View = 'now' | 'week'
+// Режим windows: окна 5h по всему журналу. Законченные — сброс уже прошёл; время — unix-секунды.
+export type WindowsReport = {
+  // Законченные окна с записями и сколько недель (окон 7d) они охватывают.
+  total: number
+  weeks: number
+  // Законченные окна по наибольшему проценту: from — от, to — до (не включая), чаще — выше.
+  levels: { from: number; to: number; count: number }[]
+  avgMax?: number
+  // Прирост 7d на 1% окна 5h: по законченным окнам от 10%, кроме окна первой записи журнала (с
+  // чего начался его прирост 7d, неизвестно).
+  d7PerPct?: number
+  // Окна, дошедшие до 100%: в среднем от начала окна до 100% и от 100% до сброса.
+  fillSeconds?: number
+  waitSeconds?: number
+  // Законченные окна по часу начала (локальное время), частые первыми: сколько, средний наибольший
+  // процент, сколько дошло до 100%.
+  byStart: { hour: number; count: number; avgMax: number; full: number }[]
+  // Текущая неделя: окна, открытое тоже, и сколько дошло до 100%.
+  week?: { total: number; full: number }
+  // Сколько окон вмещает остаток 7d: до 100% и до 80% (по d7PerPct); byTime — окон по 5 часов до
+  // сброса 7d.
+  fit?: { full: number; high: number; byTime: number }
+}
+
+export type View = 'now' | 'week' | 'windows'
 
 // Снимок на момент открытия /limits.
 export type Analysis = {
@@ -69,6 +93,7 @@ export type Analysis = {
   windows: WindowNow[]
   weeks: WeekReport[]
   now: NowReport
+  h5: WindowsReport
 }
 
 declare module 'claude-code' {

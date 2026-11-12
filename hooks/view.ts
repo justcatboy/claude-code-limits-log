@@ -1,6 +1,6 @@
 // Тексты панели /limits: что показать. Каждая функция — одна строка или её часть из данных
 // снимка; undefined — строки нет. Раскладка — в panel.tsx.
-import type { DayBudget, NowReport, WeekReport, WindowNow } from '../types'
+import type { DayBudget, NowReport, WeekReport, WindowNow, WindowsReport } from '../types'
 import {
   DAY,
   H5,
@@ -232,3 +232,63 @@ export const h5LeftLine = (w: WindowNow) => status('Остаток', `~${Math.ma
 // «Кончится  к 13:40» — только если раньше сброса окна.
 export const h5ExhaustLine = (n: NowReport) =>
   n.h5ExhaustAt !== undefined ? status('Кончится', `к ${hhmm(fromUnix(n.h5ExhaustAt))}`) : undefined
+
+// =============================================================================
+// Окна 5h по журналу
+// =============================================================================
+
+const WINDOWS: [string, string, string] = ['окно', 'окна', 'окон']
+const WEEKS: [string, string, string] = ['неделю', 'недели', 'недель']
+// Ширина столбика окон по часу начала, клеток.
+const START_BAR = 16
+
+// «Окна 5h · 48 окон за 6 недель · ~8 в неделю».
+export function windowsTitle(x: WindowsReport): string {
+  const perWeek = x.weeks ? ` · ~${round1(x.total / x.weeks)} в неделю` : ''
+  return `Окна 5h · ${plural(x.total, WINDOWS)} за ${plural(x.weeks, WEEKS)}${perWeek}`
+}
+
+// «100%      12 · 25%», «80–99%    …», «до 50%    …».
+export function levelLine(l: WindowsReport['levels'][number], total: number): string {
+  const label = l.from === 100 ? '100%' : l.from === 0 ? `до ${l.to}%` : `${l.from}–${l.to - 1}%`
+  const share = total ? ` · ${Math.round((l.count / total) * 100)}%` : ''
+  return status(label, `${pad(l.count, 3)}${share}`)
+}
+
+// «Обычно    ~64% окна · 1% 5h ≈ 0.12% 7d».
+export function usualWindowLine(x: WindowsReport): string | undefined {
+  if (x.avgMax === undefined) return undefined
+  const rate = x.d7PerPct !== undefined ? ` · 1% 5h ≈ ${x.d7PerPct.toFixed(2)}% 7d` : ''
+  return status('Обычно', `~${Math.round(x.avgMax)}% окна${rate}`)
+}
+
+// «Полное    ≈ 12% 7d» — окно до 100%.
+export const fullWindowLine = (x: WindowsReport) =>
+  x.d7PerPct !== undefined ? status('Полное', `≈ ${round1(x.d7PerPct * 100)}% 7d`) : undefined
+
+// «До 100%   за ~2ч 40м · сброса ждали ~2ч 20м».
+export function fillLine(x: WindowsReport): string | undefined {
+  if (x.fillSeconds === undefined || x.waitSeconds === undefined) return undefined
+  return status('До 100%', `за ~${span(x.fillSeconds)} · сброса ждали ~${span(x.waitSeconds)}`)
+}
+
+// «Неделя    5 окон · 2 до 100%».
+export const windowsWeekLine = (x: WindowsReport) =>
+  x.week ? status('Неделя', `${plural(x.week.total, WINDOWS)} · ${x.week.full} до 100%`) : undefined
+
+// «Вмещает   ~3.2 до 100% · ~4 до 80% · по времени до 16» — остаток 7d текущей недели.
+export function fitLine(x: WindowsReport): string | undefined {
+  if (!x.fit) return undefined
+  const { full, high, byTime } = x.fit
+  return status('Вмещает', `~${round1(full)} до 100% · ~${round1(high)} до 80% · по времени до ${byTime}`)
+}
+
+const hour = (h: number) => String(h).padStart(2, '0')
+
+// «10–15  ████████  12 · ~72% · 4 до 100%» — окна, начатые в этот час; столбик — доля от самого
+// частого.
+export function startLine(s: WindowsReport['byStart'][number], most: number): string {
+  const cells = Math.max(1, Math.round((s.count / Math.max(1, most)) * START_BAR))
+  const full = s.full ? ` · ${s.full} до 100%` : ''
+  return `${hour(s.hour)}–${hour((s.hour + 5) % 24)}  ${'█'.repeat(cells).padEnd(START_BAR)} ${pad(s.count, 3)} · ~${Math.round(s.avgMax)}%${full}`
+}
