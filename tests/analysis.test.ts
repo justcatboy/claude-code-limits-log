@@ -26,6 +26,8 @@ function row(at: number, d7: number, extra: Partial<Row> = {}): Row {
 
 const after = (days: number) => START + days * DAY
 const nowMs = (days: number) => after(days) * 1000
+// Запись недели до START: журнал начался раньше, недели с START — полные.
+const earlier = () => row(START - 3 * DAY, 5, { d7Reset: START })
 
 describe('неделя', () => {
   test('прирост от нуля, по дням; сброс вне расписания прироста не даёт', async () => {
@@ -81,10 +83,36 @@ describe('неделя', () => {
   })
 
   test('ходы на прирост — из turns строк', async () => {
-    const rows = [row(after(0.5), 2, { turns: 6 }), row(after(0.6), 4, { turns: 4 })]
+    const rows = [earlier(), row(after(0.5), 2, { turns: 6 }), row(after(0.6), 4, { turns: 4 })]
     const [w] = analyze(rows, [], nowMs(8)).weeks
     expect(w!.turns).toBe(10)
     expect(w!.turnsDelta).toBe(4)
+    expect(w!.missed).toBeUndefined()
+  })
+
+  test('журнал начался внутри недели: неделя неполная, первая запись — не в стоимость и ходы', async () => {
+    const rows = [
+      row(after(2), 16, { spent: 0.5, turns: 3 }),
+      row(after(2.5), 20, { spent: 4, turns: 4 }),
+      row(after(3.5), 22, { spent: 2, turns: 2 }),
+    ]
+    const [w] = analyze(rows, [], nowMs(8)).weeks
+    expect(w!.missed).toBe(16)
+    expect(w!.d7).toBe(22)
+    // По дням — как в журнале: процент первой записи — в её день.
+    expect(w!.days.map(d => [d.index, d.delta])).toEqual([
+      [2, 20],
+      [3, 2],
+    ])
+    expect(w!.cost).toBe(6)
+    expect(w!.costD7).toBe(6)
+    expect(w!.turns).toBe(6)
+    expect(w!.turnsDelta).toBe(6)
+  })
+
+  test('журнал начался с нуля процентов — неделя полная', async () => {
+    const [w] = analyze([row(after(2), 0), row(after(2.5), 3)], [], nowMs(8)).weeks
+    expect(w!.missed).toBeUndefined()
   })
 })
 
@@ -206,6 +234,7 @@ describe('сейчас', () => {
 
     // Прошлая неделя по дням: 10, 30, 0, 0, 20, 20, 20.
     const past = [
+      earlier(),
       row(after(0.5), 10),
       row(after(1.5), 40),
       row(after(4.5), 60),
@@ -230,9 +259,11 @@ describe('сейчас', () => {
     const weekStart = (k: number) => NEXT - (k + 1) * WEEK
     const past = [1, 2, 3, 4, 5].map(k => row(weekStart(k) + 5.5 * DAY, 10, { d7Reset: weekStart(k) + WEEK }))
     const oldest = row(weekStart(6) + 3.5 * DAY, 70, { d7Reset: weekStart(6) + WEEK })
+    // Начало журнала — неделей раньше: все шесть недель полные.
+    const first = row(weekStart(7) + DAY, 1, { d7Reset: weekStart(7) + WEEK })
 
-    const week = analyze([oldest, ...past, current(8.4, 5)], [limit('seven_day', 5, NEXT)], nowMs(8.5)).now
-      .week!
+    const week = analyze([first, oldest, ...past, current(8.4, 5)], [limit('seven_day', 5, NEXT)], nowMs(8.5))
+      .now.week!
     expect(week.pastWeeks).toBe(5)
     // Шестая неделя не учтена: дню 3 ничего, весь остаток после сегодня — дню 5.
     expect(week.usual![3]!.budget).toBe(0)
@@ -242,7 +273,7 @@ describe('сейчас', () => {
   test('прогноз по законченным неделям: средний прирост дня недели в оставшиеся дни', async () => {
     // Прошлая неделя: +10% каждый день.
     const past = [0, 1, 2, 3, 4, 5, 6].map(i => row(after(i + 0.5), 10 * (i + 1)))
-    const rows = [...past, current(10.4, 30)]
+    const rows = [earlier(), ...past, current(10.4, 30)]
 
     const calm = analyze(rows, [limit('seven_day', 30, NEXT)], nowMs(NOW)).now
     expect(calm.basis).toBe('weeks')
@@ -253,5 +284,15 @@ describe('сейчас', () => {
     const tight = analyze(rows, [limit('seven_day', 70, NEXT)], nowMs(NOW)).now
     expect(tight.forecast).toBe(105)
     expect(Math.abs(tight.exhaustAt! - after(NOW + 3))).toBeLessThan(3600)
+  })
+
+  test('неполная неделя не идёт в прошлые недели и цену 1%', async () => {
+    // Журнал начался в день 3 прошлой недели на 40%, потом +10%.
+    const partial = [row(after(3.5), 40, { spent: 1 }), row(after(4.5), 50, { spent: 5 })]
+    const n = analyze([...partial, current(10.4, 30)], [limit('seven_day', 30, NEXT)], nowMs(NOW)).now
+    expect(n.week!.usual).toBeUndefined()
+    expect(n.week!.pastWeeks).toBe(0)
+    expect(n.basis).toBe('pace')
+    expect(n.costPerPp).toBe(0.5)
   })
 })

@@ -83,11 +83,12 @@ const weekStart = (w: { reset: number }) => fromUnix(w.reset - WEEK)
 // «21.10–28.10».
 export const tabLabel = (w: WeekReport) => `${ddmm(weekStart(w))}–${ddmm(fromUnix(w.reset))}`
 
-// «25.02 10:00 – 04.03 10:00».
+// «25.02 10:00 – 04.03 10:00», у неполной — « · неполная: 16% до начала журнала».
 export function weekTitle(w: WeekReport): string {
   const start = weekStart(w)
   const end = fromUnix(w.reset)
-  return `${ddmm(start)} ${hhmm(start)} – ${ddmm(end)} ${hhmm(end)}`
+  const missed = w.missed === undefined ? '' : ` · неполная: ${w.missed}% до начала журнала`
+  return `${ddmm(start)} ${hhmm(start)} – ${ddmm(end)} ${hhmm(end)}${missed}`
 }
 
 // «Стоимость $52.82 · $0.88 за 1% 7d · сессий 18».

@@ -18,7 +18,7 @@ const MAX_TABS = 9
 // Уже панели полосы не сжимаются: дни перестают различаться.
 const MIN_WIDTH = 21
 
-const analysis = atom({ plugin: 'limits-log', key: 'analysis' } as const, null, { shape: 'analysis-8' })
+const analysis = atom({ plugin: 'limits-log', key: 'analysis' } as const, null, { shape: 'analysis-9' })
 // Индекс выбранной недели среди законченных (вкладки режима week).
 const week = atom({ plugin: 'limits-log', key: 'week' } as const, 0, { shape: 'week-1' })
 const view = atom({ plugin: 'limits-log', key: 'view' } as const, 'now' as View, { shape: 'view-2' })

@@ -44,8 +44,12 @@ function d7Deltas(rows: Row[]): Map<Row, number> {
   return deltas
 }
 
-function week(reset: number, rows: Row[], nowSec: number): WeekReport {
+// first — первая запись журнала. Её процент набран до журнала, неизвестно когда и за сколько:
+// в днях он есть (неделя по дням сходится с d7), а в стоимость и ходы на 1% не идёт; неделя с ней
+// (если процент не нулевой) — неполная.
+function week(reset: number, rows: Row[], nowSec: number, first: Row | undefined): WeekReport {
   const deltas = d7Deltas(rows)
+  const known = (r: Row) => r !== first
 
   const byDay = new Map<number, number>()
   const byModel = new Map<string, number>()
@@ -57,8 +61,8 @@ function week(reset: number, rows: Row[], nowSec: number): WeekReport {
     if (r.h5Reset > 0) maxTo(h5, r.h5Reset, r.h5)
   }
 
-  const withTurns = rows.filter(r => r.turns !== undefined)
-  const withCost = rows.filter(r => r.spent !== undefined)
+  const withTurns = rows.filter(r => known(r) && r.turns !== undefined)
+  const withCost = rows.filter(r => known(r) && r.spent !== undefined)
   const d7 = rows.at(-1)?.d7 ?? 0
   const start = reset - WEEK
 
@@ -78,6 +82,7 @@ function week(reset: number, rows: Row[], nowSec: number): WeekReport {
     turnsDelta: withTurns.length ? sum(withTurns.map(r => deltas.get(r)!)) : undefined,
     rows: rows.length,
   }
+  if (first && rows.includes(first) && first.d7 > 0) report.missed = first.d7
 
   if (report.isCurrent) {
     const share = Math.min(1, Math.max(0, (nowSec - start) / WEEK))
@@ -199,8 +204,9 @@ function nowReport(windows: WindowNow[], weeks: WeekReport[], rows: Row[], nowSe
   for (const d of current?.days ?? []) used[d.index] = d.delta
   used[today]! += Math.max(0, d7 - (current?.d7 ?? 0))
 
-  // Недели — от последней к первой: последние PAST_WEEKS законченных.
-  const past = weeks.filter(w => !w.isCurrent).slice(0, PAST_WEEKS)
+  // Недели — от последней к первой: последние PAST_WEEKS законченных полных (у неполной нет дней
+  // до начала журнала — средние по дням занизились бы).
+  const past = weeks.filter(w => !w.isCurrent && w.missed === undefined).slice(0, PAST_WEEKS)
   const averages = past.length ? dayAverages(past) : undefined
   report.week = {
     start: reset - WEEK,
@@ -325,6 +331,7 @@ export function analyze(logRows: Row[], limits: SessionRateLimit[], now: number)
       reset,
       rows.filter(r => r.d7Reset === reset),
       nowSec,
+      rows[0],
     ),
   )
   const windows: WindowNow[] = limits
